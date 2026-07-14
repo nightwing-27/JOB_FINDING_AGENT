@@ -1,7 +1,6 @@
 import streamlit as st
 import urllib.parse
 import urllib.request
-import urllib.error
 import json
 import re
 import html 
@@ -21,21 +20,13 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# ⚡ SECURE DUAL-KEY VAULT 
+# ⚡ SECURE SINGLE-KEY VAULT 
 try:
     SERPAPI_KEY = st.secrets["SERPAPI_KEY"]
+    # We are forcing the app to ONLY grab Key 2
+    GEMINI_API_KEY = st.secrets["GEMINI_API_KEY_2"]
 except KeyError:
-    st.error("🚨 Security Alert: SERPAPI_KEY is missing! Please check your Streamlit Secrets.")
-    st.stop()
-
-# 🔄 Load Balancing: Grab all available Gemini Keys
-GEMINI_KEYS = []
-if "GEMINI_API_KEY_1" in st.secrets: GEMINI_KEYS.append(st.secrets["GEMINI_API_KEY_1"])
-if "GEMINI_API_KEY_2" in st.secrets: GEMINI_KEYS.append(st.secrets["GEMINI_API_KEY_2"])
-if "GEMINI_API_KEY" in st.secrets: GEMINI_KEYS.append(st.secrets["GEMINI_API_KEY"]) # Fallback for old name
-
-if not GEMINI_KEYS:
-    st.error("🚨 Security Alert: No Gemini API Keys found in vault!")
+    st.error("🚨 Security Alert: Please make sure SERPAPI_KEY and GEMINI_API_KEY_2 are in your Streamlit Secrets.")
     st.stop()
 
 BANNED_BOARDS = ["jooble", "talent.com", "foundit", "jobrapido", "bebee", "adzuna", "getmereferred", "kit job", "trabajo", "jobaaj", "simplyhired", "apna", "cutshort", "lensa", "ziprecruiter"]
@@ -44,34 +35,23 @@ BANNED_TITLE_WORDS = ["salary up to", "lpa", "freshers jobs", "fresher jobs", "h
 if "last_request_time" not in st.session_state:
     st.session_state.last_request_time = 0
 
-# 🧠 THE DUAL-KEY "WATERFALL" ROUTER
+# 🧠 THE PURE GEMINI "WATERFALL" ROUTER
 def call_ai_fallback(prompt, system_instruction):
     gemini_models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
     
-    # Iterate through all available API keys
-    for i, key in enumerate(GEMINI_KEYS):
-        # Iterate through models (Newest to Oldest)
-        for model in gemini_models:
-            try:
-                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
-                payload = json.dumps({"contents": [{"parts": [{"text": f"{system_instruction}\n\nUser: {prompt}"}]}]}).encode('utf-8')
-                req = urllib.request.Request(url, data=payload, headers={'Content-Type': 'application/json'})
-                with urllib.request.urlopen(req) as response:
-                    res = json.loads(response.read().decode())
-                    txt = res['candidates'][0]['content']['parts'][0]['text']
-                    return json.loads(re.sub(r"```json|```", "", txt).strip())
-            except urllib.error.HTTPError as e:
-                # If rate-limited (429) or quota exceeded/bad request (400, 403), jump to the NEXT API KEY immediately
-                if e.code in [429, 403, 400]:
-                    if len(GEMINI_KEYS) > 1 and i < len(GEMINI_KEYS) - 1:
-                        st.toast(f"Key {i+1} Limit Reached! Hot-swapping to Backup Key...", icon="🔄")
-                    break 
-                continue # For other errors, just try the older model
-            except Exception:
-                continue 
+    for model in gemini_models:
+        try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
+            payload = json.dumps({"contents": [{"parts": [{"text": f"{system_instruction}\n\nUser: {prompt}"}]}]}).encode('utf-8')
+            req = urllib.request.Request(url, data=payload, headers={'Content-Type': 'application/json'})
+            with urllib.request.urlopen(req) as response:
+                res = json.loads(response.read().decode())
+                txt = res['candidates'][0]['content']['parts'][0]['text']
+                return json.loads(re.sub(r"```json|```", "", txt).strip())
+        except Exception as e:
+            continue 
 
-    # If ALL keys and ALL models fail:
-    st.error("🚨 CRITICAL: All API keys and Gemini models rejected the request. Limits exceeded.")
+    st.error("🚨 CRITICAL: All Google Gemini models rejected the request. Please check your API Key limits.")
     return None
 
 def find_corporate_url(company, role):
