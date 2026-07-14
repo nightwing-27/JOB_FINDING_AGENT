@@ -37,7 +37,7 @@ if "last_request_time" not in st.session_state:
 
 def ask_gemini_intent(prompt):
     # ⚡ UPDATED: Pointing to Gemini 3 Flash Live
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-live:generateContent?key={GEMINI_API_KEY}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash:generateContent?key={GEMINI_API_KEY}"
     system_instruction = """
     Extract search parameters. Return ONLY raw JSON (no backticks):
     "company" (string, specific company mentioned, or empty if none),
@@ -90,7 +90,7 @@ def playwright_scrape_and_parse(url, company):
     st.toast(f"Ripped {len(raw_text)} characters. Handing to Gemini AI...", icon="🧠")
     
     # ⚡ UPDATED: Pointing to Gemini 3 Flash Live
-    ai_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-live:generateContent?key={GEMINI_API_KEY}"
+    ai_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash:generateContent?key={GEMINI_API_KEY}"
     prompt = f"Extract all job listings from this messy text. Return ONLY a JSON list of objects with keys: 'title', 'location' (explicitly write Remote, Hybrid, or Offline if mentioned), 'type'. If none, return []. Text: {raw_text[:20000]}"
     payload = json.dumps({"contents": [{"parts": [{"text": prompt}]}]}).encode('utf-8')
     req = urllib.request.Request(ai_url, data=payload, headers={'Content-Type': 'application/json'})
