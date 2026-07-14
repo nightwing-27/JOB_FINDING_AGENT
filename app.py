@@ -1,11 +1,10 @@
 import streamlit as st
 import urllib.parse
 import urllib.request
-import urllib.error
 import json
 import re
-import html 
-import time 
+import html # ⚡ SECURITY: Added for Input Sanitization
+import time # ⚡ SECURITY: Added for Rate Limiting
 from playwright.sync_api import sync_playwright
 
 st.set_page_config(page_title="Career Agent", page_icon="🤖")
@@ -21,57 +20,41 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# ⚡ SECURE DUAL-KEY VAULT 
+# ⚡ API VAULT
 try:
     SERPAPI_KEY = st.secrets["SERPAPI_KEY"]
+    GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
 except KeyError:
-    st.error("🚨 Security Alert: SERPAPI_KEY is missing! Please check your Streamlit Secrets.")
-    st.stop()
-
-# 🔄 Load Balancing: Grab all available Gemini Keys from the Vault
-GEMINI_KEYS = []
-if "GEMINI_API_KEY_1" in st.secrets: GEMINI_KEYS.append(st.secrets["GEMINI_API_KEY_1"])
-if "GEMINI_API_KEY_2" in st.secrets: GEMINI_KEYS.append(st.secrets["GEMINI_API_KEY_2"])
-
-if not GEMINI_KEYS:
-    st.error("🚨 Security Alert: No Gemini API Keys found in vault! Please check your Streamlit Secrets.")
+    st.error("🚨 Security Alert: API keys are missing! Please add them to your `.streamlit/secrets.toml` file.")
     st.stop()
 
 BANNED_BOARDS = ["jooble", "talent.com", "foundit", "jobrapido", "bebee", "adzuna", "getmereferred", "kit job", "trabajo", "jobaaj", "simplyhired", "apna", "cutshort", "lensa", "ziprecruiter"]
 BANNED_TITLE_WORDS = ["salary up to", "lpa", "freshers jobs", "fresher jobs", "hiring freshers", "100%", "guaranteed", "walk-in", "walk in", "course bhai", "urgent hiring"]
 
+# ⚡ SECURITY: Initialize Rate Limiter in Session State
 if "last_request_time" not in st.session_state:
     st.session_state.last_request_time = 0
 
-# 🧠 THE DUAL-KEY "WATERFALL" ROUTER
-def call_ai_fallback(prompt, system_instruction):
-    gemini_models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
-    
-    # Iterate through all available API keys
-    for i, key in enumerate(GEMINI_KEYS):
-        # Iterate through models (Newest to Oldest)
-        for model in gemini_models:
-            try:
-                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
-                payload = json.dumps({"contents": [{"parts": [{"text": f"{system_instruction}\n\nUser: {prompt}"}]}]}).encode('utf-8')
-                req = urllib.request.Request(url, data=payload, headers={'Content-Type': 'application/json'})
-                with urllib.request.urlopen(req) as response:
-                    res = json.loads(response.read().decode())
-                    txt = res['candidates'][0]['content']['parts'][0]['text']
-                    return json.loads(re.sub(r"```json|```", "", txt).strip())
-            except urllib.error.HTTPError as e:
-                # If rate-limited (429) or bad request (400, 403), jump to the NEXT API KEY immediately
-                if e.code in [429, 403, 400]:
-                    if len(GEMINI_KEYS) > 1 and i < len(GEMINI_KEYS) - 1:
-                        st.toast(f"Key {i+1} Limit Reached/Rejected! Hot-swapping to Backup Key...", icon="🔄")
-                    break # Breaks the model loop to switch to the next key
-                continue # For other errors, just try the older model
-            except Exception:
-                continue 
-
-    # If ALL keys and ALL models fail:
-    st.error("🚨 CRITICAL: All API keys and Gemini models rejected the request. Limits exceeded or Google blocked the prompt.")
-    return None
+def ask_gemini_intent(prompt):
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key={GEMINI_API_KEY}"
+    system_instruction = """
+    Extract search parameters. Return ONLY raw JSON (no backticks):
+    "company" (string, specific company mentioned, or empty if none),
+    "role" (string, the job title),
+    "geography" (string, ONLY geographical places like city, state, or country. e.g., 'Mumbai', 'India'. Empty if none),
+    "work_setup" (string, ONLY 'Remote', 'Hybrid', 'Offline', or empty),
+    "experience" (string, e.g., 'Fresher', 'Internship', 'Entry Level', 'Senior', or empty if none mentioned)
+    """
+    payload = json.dumps({"contents": [{"parts": [{"text": f"{system_instruction}\n\nUser: {prompt}"}]}]}).encode('utf-8')
+    req = urllib.request.Request(url, data=payload, headers={'Content-Type': 'application/json'})
+    try:
+        with urllib.request.urlopen(req) as response:
+            res = json.loads(response.read().decode())
+            txt = res['candidates'][0]['content']['parts'][0]['text']
+            return json.loads(re.sub(r"```json|```", "", txt).strip())
+    except Exception as e:
+        st.error(f"🚨 API Connection Failed: {e}")
+        return None
 
 def find_corporate_url(company, role):
     search_term = f"{company} careers {role}".replace("Any Role", "").strip()
@@ -103,13 +86,20 @@ def playwright_scrape_and_parse(url, company):
             browser.close()
             
     if not raw_text: return []
-    st.toast(f"Ripped {len(raw_text)} characters. Handing to AI...", icon="🧠")
+    st.toast(f"Ripped {len(raw_text)} characters. Handing to Gemini AI...", icon="🧠")
     
-    system_instruction = "Extract all job listings from this messy text. Return ONLY a raw JSON list of objects with keys: 'title', 'location' (explicitly write Remote, Hybrid, or Offline if mentioned), 'type'. If none, return []."
-    prompt = f"Text to parse: {raw_text[:15000]}"
+    ai_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key={GEMINI_API_KEY}"
+    prompt = f"Extract all job listings from this messy text. Return ONLY a JSON list of objects with keys: 'title', 'location' (explicitly write Remote, Hybrid, or Offline if mentioned), 'type'. If none, return []. Text: {raw_text[:20000]}"
+    payload = json.dumps({"contents": [{"parts": [{"text": prompt}]}]}).encode('utf-8')
+    req = urllib.request.Request(ai_url, data=payload, headers={'Content-Type': 'application/json'})
     
-    result = call_ai_fallback(prompt, system_instruction)
-    return result if result else []
+    try:
+        with urllib.request.urlopen(req) as response:
+            res = json.loads(response.read().decode())
+            txt = res['candidates'][0]['content']['parts'][0]['text']
+            return json.loads(re.sub(r"```json|```", "", txt).strip())
+    except:
+        return []
 
 with st.sidebar:
     st.title("⚙️ Search Filters")
@@ -129,6 +119,7 @@ with st.sidebar:
     filter_state = st.text_input("State / Province", value="" if not lock_inputs else "N/A", placeholder="Optional" if not lock_inputs else "", disabled=lock_inputs)
     filter_city = st.text_input("City", value="" if not lock_inputs else "N/A", placeholder="Optional" if not lock_inputs else "", disabled=lock_inputs)
     
+    # ⚡ SECURITY: Privacy Badge
     st.markdown("<div class='privacy-badge'>🔒 Zero-Log Policy Active.<br>Your searches are not tracked or stored.</div>", unsafe_allow_html=True)
 
 st.title("🤖 Career Agent")
@@ -138,6 +129,7 @@ raw_user_prompt = st.chat_input("e.g., paid non tech internships in mumbai...")
 
 if raw_user_prompt:
     
+    # ⚡ SECURITY CHECK 1: Anti-Spam Rate Limiter (5 Seconds)
     current_time = time.time()
     time_since_last = current_time - st.session_state.last_request_time
     if time_since_last < 5.0:
@@ -145,8 +137,12 @@ if raw_user_prompt:
         st.stop()
     st.session_state.last_request_time = current_time
 
+    # ⚡ SECURITY CHECK 2: Input Sanitization (Strips malicious HTML/JS)
     safe_prompt = html.escape(raw_user_prompt).strip()
+    
+    # ⚡ SECURITY CHECK 3: Length Enforcer (Prevents buffer overflow / huge prompt bills)
     if len(safe_prompt) > 300:
+        st.warning("⚠️ Prompt too long. Truncating to prevent API overload.")
         safe_prompt = safe_prompt[:300]
 
     with st.chat_message("user"):
@@ -154,15 +150,7 @@ if raw_user_prompt:
         
     with st.chat_message("assistant"):
         with st.spinner("🧠 Analyzing intent securely..."):
-            system_instruction = """
-            Extract search parameters. Return ONLY raw JSON (no backticks):
-            "company" (string, specific company mentioned, or empty if none),
-            "role" (string, the job title),
-            "geography" (string, ONLY geographical places like city, state, or country. e.g., 'Mumbai', 'India'. Empty if none),
-            "work_setup" (string, ONLY 'Remote', 'Hybrid', 'Offline', or empty),
-            "experience" (string, e.g., 'Fresher', 'Internship', 'Entry Level', 'Senior', or empty if none mentioned)
-            """
-            params = call_ai_fallback(safe_prompt, system_instruction)
+            params = ask_gemini_intent(safe_prompt)
             
         if params:
             company = params.get('company', '')
@@ -201,11 +189,10 @@ if raw_user_prompt:
                 if target_url:
                     with st.spinner("🤖 Playwright extracting jobs..."):
                         corp_jobs = playwright_scrape_and_parse(target_url, company)
-                        if isinstance(corp_jobs, list):
-                            for cj in corp_jobs:
-                                cj['apply_links'] = [{"site": f"{company} Portal", "url": target_url}]
-                                cj['source_tag'] = "🏢 Corporate Site"
-                            jobs.extend(corp_jobs)
+                        for cj in corp_jobs:
+                            cj['apply_links'] = [{"site": f"{company} Portal", "url": target_url}]
+                            cj['source_tag'] = "🏢 Corporate Site"
+                        jobs.extend(corp_jobs)
                 else:
                     st.info("No standalone career site found. Deep searching ATS...")
 
